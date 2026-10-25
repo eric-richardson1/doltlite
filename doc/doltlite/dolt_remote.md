@@ -16,6 +16,7 @@ SELECT dolt_push('origin', 'main', '--force');
 SELECT dolt_push('origin', 'main:feature/x');    -- local main, remote branch feature/x
 SELECT dolt_push('origin', 'HEAD:hh');           -- checked-out branch, remote branch hh
 SELECT dolt_push('origin', 'v1.0');              -- one tag
+SELECT dolt_push('origin', ':refs/tags/v1.0');   -- delete a remote tag
 SELECT dolt_push('origin', '--tags');
 SELECT dolt_push('--all', 'origin');             -- every local branch, not tags
 SELECT dolt_fetch('origin');                     -- all branches
@@ -64,7 +65,7 @@ SELECT dolt_clone('--remote', 'bad/name', 'http://host:8080/mydb.db'); -- error:
 | Function | Arguments | Notes |
 |---|---|---|
 | `dolt_remote` | `'add', name, url` or `'remove', name` | `file://` or `http(s)://...` URL naming the database file. A `file://` path is stored absolute |
-| `dolt_push` | `remote, branch [, '--force']` or `remote, 'src:dst'` or `remote, tag` or `remote, '--tags'` or `'--all', remote` | Non-fast-forward is refused without `--force`. `src:dst` pushes revision `src` as remote branch `dst`. `HEAD` as `src` is the checked-out branch's tip; any other `src` is a revision. `--all` pushes every local branch and not tags; the remote name is required |
+| `dolt_push` | `remote, branch [, '--force']` or `remote, 'src:dst'` or `remote, tag` or `remote, '--tags'` or `'--all', remote` | Non-fast-forward is refused without `--force`. `src:dst` pushes revision `src` as remote branch `dst`. `HEAD` as `src` is the checked-out branch's tip; any other `src` is a revision. `--all` pushes every local branch and not tags; the remote name is required. `':branch'` deletes a remote branch and `':refs/tags/tag'` a remote tag |
 | `dolt_fetch` | `remote [, branch or refspec] [, '--prune']` | Updates `remotes/<remote>/<branch>` tracking refs and tags. A refspec maps `refs/heads/<pat>` onto `refs/remotes/<name>/<pat>`. `--prune` / `-p` drops tracking refs the remote no longer has, and is refused together with a refspec |
 | `dolt_pull` | `[remote [, branch]]` or `'--prune'` | With no branch, fetches every remote branch and tag, then fast-forwards or merges the current branch. With a branch, fetches only that branch. `--prune` / `-p` is allowed with a branch and drops tracking refs the remote no longer has |
 | `dolt_clone` | `['--lazy'] ['--revision', rev] ['--branch', name] ['--remote', name] ['--single-branch'] url` | Only into an empty database. `--remote` names the remote (default `origin`). `--single-branch` tracks and checks out one branch |
@@ -84,6 +85,8 @@ when it cannot fast-forward, conflicts included.
 | `remote name invalid` | `dolt_clone --remote` used an empty name or a name `dolt_remote add` would reject |
 | `invalid branch name` | `src:dst` destination fails the branch name rules |
 | `unsupported mapping: '<refspec>'` | `src:dst` destination is under `refs/tags/` |
+| `failed to delete remote; 'refs/tags/<tag>' from remote '<remote>'; tag not found` | `':refs/tags/<tag>'` names a tag the remote does not have |
+| `push failed: tag name required after ':refs/tags/'` | `':refs/tags/'` with no tag name |
 | `invalid fetch spec: '<spec>'` | fetch refspec is not a branch mapped onto a remote-tracking branch, or a glob matches nothing |
 | `fetch failed: invalid ref spec: '<branch>'` | `dolt_fetch` refspec names a branch the remote does not have. Nothing is fetched |
 | `not a fast-forward of the remote branch (use force to overwrite)` | remote moved; add `--force` |
@@ -144,6 +147,12 @@ when it cannot fast-forward, conflicts included.
   branch list is unchanged either way. A read-only connection, or another
   connection holding a write transaction, is refused before the remote ref
   moves.
+- `dolt_push(remote, ':refs/tags/tag')` deletes that tag from the remote, as
+  in git. The local tag is kept. A tag the remote does not have is an error.
+  If another client moves the tag while the delete is in flight, the delete
+  is refused rather than removing the moved tag. A bare `':name'` always names
+  a branch. Dolt refuses tag deletion as an unsupported mapping; see
+  [dolt-differences.md](dolt-differences.md).
 - A lazy clone installs refs without copying chunks and fetches them on
   demand from `origin`. Reopen it with `?lazy_origin=1` to keep that
   behaviour in a new process; `--revision` picks the branch to check out, or a
