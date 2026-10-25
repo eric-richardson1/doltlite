@@ -39,7 +39,15 @@ static void brCurClearSnapshot(BrCur *c){
   c->iRow = 0;
 }
 
-static int brCurSnapshot(BrCur *c, const BranchRef *aBr, int nBr){
+/* bWorkspaces selects the workspace refs, named without their prefix;
+** otherwise only user branches. */
+static int brCurSnapshot(
+  BrCur *c,
+  const BranchRef *aBr,
+  int nBr,
+  int bWorkspaces
+){
+  int nPrefix = bWorkspaces ? (int)sizeof(DOLTLITE_WORKSPACE_BRANCH_PREFIX)-1 : 0;
   int i;
   brCurClearSnapshot(c);
   if( nBr<=0 ) return SQLITE_OK;
@@ -48,10 +56,13 @@ static int brCurSnapshot(BrCur *c, const BranchRef *aBr, int nBr){
   if( !c->aSnap ) return SQLITE_NOMEM;
   memset(c->aSnap, 0, (size_t)nBr*sizeof(BranchRef));
   for(i=0; i<nBr; i++){
-    c->nRows = i+1;
-    c->aSnap[i] = aBr[i];
-    c->aSnap[i].zName = sqlite3_mprintf("%s", aBr[i].zName ? aBr[i].zName : "");
-    if( !c->aSnap[i].zName ){
+    const char *zName = aBr[i].zName ? aBr[i].zName : "";
+    BranchRef *pSnap;
+    if( doltliteIsWorkspaceBranch(zName)!=bWorkspaces ) continue;
+    pSnap = &c->aSnap[c->nRows++];
+    *pSnap = aBr[i];
+    pSnap->zName = sqlite3_mprintf("%s", zName + nPrefix);
+    if( !pSnap->zName ){
       brCurClearSnapshot(c);
       return SQLITE_NOMEM;
     }
@@ -118,7 +129,7 @@ static int brFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3
     aBr += i;
     nBr = 1;
   }
-  return brCurSnapshot(pCur, aBr, nBr);
+  return brCurSnapshot(pCur, aBr, nBr, 0);
 }
 static int brNext(sqlite3_vtab_cursor *c){
   brClearCommit((BrCur*)c);
@@ -330,7 +341,9 @@ static int rbFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3
   if( !pCur->aSnap ) return SQLITE_NOMEM;
   memset(pCur->aSnap, 0, (size_t)nTr*sizeof(BranchRef));
   for(i=0; i<nTr; i++){
-    char *z = sqlite3_mprintf("remotes/%s/%s", aTr[i].zRemote, aTr[i].zBranch);
+    char *z;
+    if( doltliteIsWorkspaceBranch(aTr[i].zBranch) ) continue;
+    z = sqlite3_mprintf("remotes/%s/%s", aTr[i].zRemote, aTr[i].zBranch);
     if( !z ){
       brCurClearSnapshot(pCur);
       return SQLITE_NOMEM;
@@ -349,6 +362,37 @@ static int rbFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3
 sqlite3_module doltliteRemoteBranchesModule = {
   0,0,rbConnect,brBestIndex,doltliteVtabDisconnect,0,
   brOpen,brClose,rbFilter,brNext,brEof,brColumn,brRowid,
+  0,0,0,0,0,0,0,0,0,0,0,0
+};
+
+static int wsFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3_value **v){
+  BrVtab *pVtab = (BrVtab*)c->pVtab;
+  BrCur *pCur = (BrCur*)c;
+  ChunkStore *cs = doltliteGetChunkStore(pVtab->db);
+  int nBr = 0;
+  const BranchRef *aBr = 0;
+  (void)s;
+  (void)a;
+  brClearCommit(pCur);
+  brCurClearSnapshot(pCur);
+  if( !cs ) return SQLITE_OK;
+  refsTableGetBranches(&cs->refs, &nBr, &aBr);
+  if( n==1 ){
+    const char *zName = (const char*)sqlite3_value_text(v[0]);
+    char *zBranch = zName ? doltliteWorkspaceBranchName(zName) : 0;
+    int i = zBranch ? csFindNamedRef(cs->refs.aBranches, cs->refs.nBranches,
+                                     (int)sizeof(BranchRef), zBranch) : -1;
+    sqlite3_free(zBranch);
+    if( i<0 ) return SQLITE_OK;
+    aBr += i;
+    nBr = 1;
+  }
+  return brCurSnapshot(pCur, aBr, nBr, 1);
+}
+
+sqlite3_module doltliteWorkspacesModule = {
+  0,0,rbConnect,brBestIndex,doltliteVtabDisconnect,0,
+  brOpen,brClose,wsFilter,brNext,brEof,brColumn,brRowid,
   0,0,0,0,0,0,0,0,0,0,0,0
 };
 

@@ -100,6 +100,7 @@ int mutateBranchRef(sqlite3 *db, ChunkStore *cs, void *pArg){
   if( p->isDelete ){
     const char *zDefault = chunkStoreGetDefaultBranch(cs);
     (void)db;
+    if( doltliteIsWorkspaceBranch(p->zName) ) return SQLITE_NOTFOUND;
     if( zDefault && strcmp(p->zName, zDefault)==0 ) return SQLITE_CONSTRAINT;
     return chunkStoreDeleteBranch(cs, p->zName);
   }
@@ -139,6 +140,7 @@ static int mutateBranchCopy(sqlite3 *db, ChunkStore *cs, void *pArg){
   int rc;
   (void)db;
 
+  if( doltliteIsWorkspaceBranch(p->zSrc) ) return SQLITE_NOTFOUND;
   rc = chunkStoreFindBranch(cs, p->zSrc, &srcCommit);
   if( rc!=SQLITE_OK ) return rc;
   if( !doltliteUserRefNameIsValid(p->zDest) ) return SQLITE_CONSTRAINT;
@@ -167,6 +169,7 @@ static int mutateBranchMove(sqlite3 *db, ChunkStore *cs, void *pArg){
   (void)db;
   if( strcmp(p->zSrc, p->zDest)==0 ) return SQLITE_ERROR;
   if( !doltliteUserRefNameIsValid(p->zDest) ) return SQLITE_CONSTRAINT;
+  if( doltliteIsWorkspaceBranch(p->zSrc) ) return SQLITE_NOTFOUND;
   rc = chunkStoreFindBranch(cs, p->zSrc, &srcCommit);
   if( rc!=SQLITE_OK ) return rc;
   if( branchNameTakenIgnoringCase(cs, p->zDest, p->zSrc) ) return SQLITE_ERROR;
@@ -228,6 +231,7 @@ static int mutateBranchDelete(sqlite3 *db, ChunkStore *cs, void *pArg){
       p->isDefault = 1;
       return SQLITE_CONSTRAINT;
     }
+    if( doltliteIsWorkspaceBranch(p->azName[i]) ) return SQLITE_NOTFOUND;
     rc = chunkStoreFindBranch(cs, p->azName[i], &branchHead);
     if( rc!=SQLITE_OK ) return rc;
     if( !p->force ){
@@ -512,6 +516,112 @@ static void doltBranchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv)
   doltliteCmdArgsClear(&args);
 }
 
+typedef struct WorkspaceMutationCtx WorkspaceMutationCtx;
+struct WorkspaceMutationCtx {
+  const char *zName;
+  const char *zBranch;
+  const char *zStart;
+  ProllyHash head;
+  int isDelete;
+  int resolveRc;
+  int branchExists;
+};
+
+static int mutateWorkspace(sqlite3 *db, ChunkStore *cs, void *pArg){
+  WorkspaceMutationCtx *p = (WorkspaceMutationCtx*)pArg;
+  if( p->isDelete ){
+    return chunkStoreDeleteBranch(cs, p->zBranch);
+  }
+  if( chunkStoreFindBranch(cs, p->zName, 0)==SQLITE_OK ){
+    p->branchExists = 1;
+    return SQLITE_CONSTRAINT;
+  }
+  if( chunkStoreFindBranch(cs, p->zBranch, 0)==SQLITE_OK ) return SQLITE_ERROR;
+  p->resolveRc = doltliteResolveRefForMutation(db, p->zStart, &p->head);
+  if( p->resolveRc!=SQLITE_OK ) return p->resolveRc;
+  return chunkStoreAddBranch(cs, p->zBranch, &p->head);
+}
+
+static void doltWorkspaceFunc(
+  sqlite3_context *ctx,
+  int argc,
+  sqlite3_value **argv
+){
+  sqlite3 *db = sqlite3_context_db_handle(ctx);
+  ChunkStore *cs = doltliteGetChunkStore(db);
+  DoltliteCmdArgs args;
+  WorkspaceMutationCtx m;
+  int isDelete = 0;
+  int hadExplicitTxn = !db->autoCommit;
+  int hadSavepoint = db->pSavepoint!=0;
+  DoltliteCmdOption aOption[] = {
+    { "delete", 'd', DOLTLITE_CMD_OPTION_FLAG, &isDelete, 0 }
+  };
+  char *zBranch = 0;
+  int rc;
+
+  if( doltliteCmdRejectDetached(ctx) ) return;
+  if( doltliteCmdRejectReadOnly(ctx) ) return;
+  if( !cs ){
+    branchError(ctx, hadSavepoint, doltliteVcUnavailableMessage(db));
+    return;
+  }
+  rc = doltliteCmdParseArgs(ctx, argc, argv, aOption, ArraySize(aOption),
+                            0, &args);
+  if( rc!=SQLITE_OK ){
+    (void)doltliteVcSealSavepointError(db);
+    return;
+  }
+  memset(&m, 0, sizeof(m));
+  m.isDelete = isDelete;
+  if( args.nPositional<1 || branchNameEmpty(args.azPositional[0]) ){
+    branchError(ctx, hadSavepoint, "workspace name required");
+    goto workspace_done;
+  }
+  if( args.nPositional>(isDelete ? 1 : 2) ){
+    branchError(ctx, hadSavepoint, "too many arguments");
+    goto workspace_done;
+  }
+  m.zName = args.azPositional[0];
+  m.zStart = args.nPositional>1 ? args.azPositional[1] : 0;
+  zBranch = doltliteWorkspaceBranchName(m.zName);
+  if( !zBranch ){
+    branchError(ctx, hadSavepoint, "invalid workspace name");
+    goto workspace_done;
+  }
+  m.zBranch = zBranch;
+  if( isDelete && strcmp(zBranch, doltliteGetSessionBranch(db))==0 ){
+    branchError(ctx, hadSavepoint, "cannot delete the current workspace");
+    goto workspace_done;
+  }
+  rc = doltliteMutateRefs(db, mutateWorkspace, &m);
+  if( rc!=SQLITE_OK ){
+    if( m.branchExists ){
+      branchError(ctx, hadSavepoint,
+        "workspace name must not be existing branch name");
+    }else if( m.resolveRc!=SQLITE_OK ){
+      branchNamedResultError(ctx, hadSavepoint, m.resolveRc,
+        "start point not found", "start point not found");
+    }else{
+      branchNamedResultError(ctx, hadSavepoint, rc,
+        "workspace not found", "workspace already exists");
+    }
+    goto workspace_done;
+  }
+  if( hadExplicitTxn ){
+    rc = doltliteVcSealBranchStyleTxn(db);
+    if( rc!=SQLITE_OK ){
+      doltliteVcResultSealError(ctx, db, rc);
+      branchSealSavepointsOnError(ctx, hadSavepoint);
+      goto workspace_done;
+    }
+  }
+  sqlite3_result_int(ctx, 0);
+
+workspace_done:
+  sqlite3_free(zBranch);
+  doltliteCmdArgsClear(&args);
+}
 
 int doltliteBranchRegister(sqlite3 *db){
   int rc;
@@ -524,6 +634,9 @@ int doltliteBranchRegister(sqlite3 *db){
                                  doltConnectBranchFunc);
   if(rc==SQLITE_OK) rc = doltliteCreateShieldedModule(db, "dolt_branches", &doltliteBranchesModule, 0);
   if(rc==SQLITE_OK) rc = doltliteCreateShieldedModule(db, "dolt_remote_branches", &doltliteRemoteBranchesModule, 0);
+  if(rc==SQLITE_OK) rc = doltliteCreateCommandFunc(db, "dolt_workspace", -1,
+                                 doltWorkspaceFunc);
+  if(rc==SQLITE_OK) rc = doltliteCreateShieldedModule(db, "dolt_workspaces", &doltliteWorkspacesModule, 0);
   return rc;
 }
 

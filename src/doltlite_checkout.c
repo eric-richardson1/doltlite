@@ -576,7 +576,8 @@ void doltConnectBranchFunc(
     return;
   }
 
-  rc = chunkStoreFindBranch(cs, zBranch, &targetCommit);
+  rc = doltliteIsWorkspaceBranch(zBranch) ? SQLITE_NOTFOUND
+     : chunkStoreFindBranch(cs, zBranch, &targetCommit);
   if( rc!=SQLITE_OK || prollyHashIsEmpty(&targetCommit) ){
     sqlite3_result_error(ctx, "branch not found", -1);
     return;
@@ -1555,6 +1556,10 @@ static void doltCheckoutParsedFunc(
 
   if( !createBranch && argc==1 ){
     ProllyHash probe;
+    if( doltliteIsWorkspaceBranch(zBranch) ){
+      checkoutDetachedHeadError(ctx, db);
+      return;
+    }
     if( chunkStoreFindTag(cs, zBranch, &probe)==SQLITE_OK
      && !prollyHashIsEmpty(&probe) ){
       checkoutDetachedHeadError(ctx, db);

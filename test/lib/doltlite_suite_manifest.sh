@@ -58,6 +58,7 @@ doltlite_revert_dirty.sh
 doltlite_rebase.sh
 doltlite_rebase_schema.sh
 doltlite_open_branch.sh
+doltlite_workspace_refs.sh
 doltlite_diff_table.sh
 doltlite_diff_table_range.sh
 doltlite_diff_stat_scale.sh

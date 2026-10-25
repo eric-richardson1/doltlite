@@ -46,6 +46,22 @@ static int doltliteOpenRevisionBase(
   if( strcmp(zRef, "HEAD")==0 || strcmp(zRef, "head")==0 ){
     zBranch = chunkStoreGetDefaultBranch(cs);
     if( !zBranch ) return SQLITE_NOTFOUND;
+  }else if( doltliteIsWorkspaceBranch(zRef) ){
+    return SQLITE_NOTFOUND;
+  }else{
+    char *zWorkspace = doltliteWorkspaceBranchFromRef(zRef);
+    if( zWorkspace ){
+      rc = chunkStoreFindBranch(cs, zWorkspace, pCommit);
+      if( rc!=SQLITE_OK || prollyHashIsEmpty(pCommit) ){
+        sqlite3_free(zWorkspace);
+        return rc==SQLITE_OK ? SQLITE_NOTFOUND : rc;
+      }
+      *pzBranch = zWorkspace;
+      memset(&commit, 0, sizeof(commit));
+      rc = doltliteLoadCommitFromStore(cs, pCommit, &commit);
+      if( rc==SQLITE_OK ) doltliteCommitClear(&commit);
+      return rc;
+    }
   }
   rc = chunkStoreFindBranch(cs, zBranch, pCommit);
   if( rc==SQLITE_OK && !prollyHashIsEmpty(pCommit) ){
@@ -210,6 +226,34 @@ int doltliteUserRefNameIsValid(const char *zName){
   return !doltliteRefComponentEndsLock(zComponent, (const char*)z);
 }
 
+int doltliteIsWorkspaceBranch(const char *zBranch){
+  return zBranch && strncmp(zBranch, DOLTLITE_WORKSPACE_BRANCH_PREFIX,
+                            sizeof(DOLTLITE_WORKSPACE_BRANCH_PREFIX)-1)==0;
+}
+
+char *doltliteWorkspaceBranchName(const char *zName){
+  if( !doltliteUserRefNameIsValid(zName) ) return 0;
+  return sqlite3_mprintf("%s%s", DOLTLITE_WORKSPACE_BRANCH_PREFIX, zName);
+}
+
+int doltliteWorkspaceBranchIsValid(const char *zBranch){
+  return doltliteIsWorkspaceBranch(zBranch)
+      && doltliteUserRefNameIsValid(
+             zBranch + sizeof(DOLTLITE_WORKSPACE_BRANCH_PREFIX)-1);
+}
+
+int doltliteWorkspaceRefIsValid(const char *zRef){
+  int n = (int)sizeof(DOLTLITE_WORKSPACE_REF_PREFIX)-1;
+  return zRef && strncmp(zRef, DOLTLITE_WORKSPACE_REF_PREFIX, n)==0
+      && doltliteUserRefNameIsValid(zRef + n);
+}
+
+char *doltliteWorkspaceBranchFromRef(const char *zRef){
+  int n = (int)sizeof(DOLTLITE_WORKSPACE_REF_PREFIX)-1;
+  if( !zRef || strncmp(zRef, DOLTLITE_WORKSPACE_REF_PREFIX, n)!=0 ) return 0;
+  return doltliteWorkspaceBranchName(zRef + n);
+}
+
 static int doltliteValidateCommitHash(
   sqlite3 *db,
   const ProllyHash *pHash
@@ -283,14 +327,23 @@ static int doltliteResolveBaseRef(
 
   for(i=0; i<5; i++){
     switch( i ){
-      case 0:
+      case 0: {
+        char *zWorkspace;
         if( strncmp(zRef, "refs/", 5)!=0 ) continue;
-        rc = doltliteFindRefInNamespace(cs, zRef+5, pCommit);
+        zWorkspace = doltliteWorkspaceBranchFromRef(zRef);
+        if( zWorkspace ){
+          rc = chunkStoreFindBranch(cs, zWorkspace, pCommit);
+          sqlite3_free(zWorkspace);
+        }else{
+          rc = doltliteFindRefInNamespace(cs, zRef+5, pCommit);
+        }
         break;
+      }
       case 1:
         rc = doltliteFindRefInNamespace(cs, zRef, pCommit);
         break;
       case 2:
+        if( doltliteIsWorkspaceBranch(zRef) ) continue;
         rc = chunkStoreFindBranch(cs, zRef, pCommit);
         break;
       case 3:

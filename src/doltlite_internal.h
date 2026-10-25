@@ -1709,6 +1709,16 @@ int doltliteResolveRefForMutation(
 );
 int doltliteUserRefNameIsValid(const char *zName);
 
+/* Workspaces are branch refs under a name no user branch can take: ':' is
+** illegal in user ref names. */
+#define DOLTLITE_WORKSPACE_BRANCH_PREFIX "workspaces:"
+#define DOLTLITE_WORKSPACE_REF_PREFIX "refs/workspaces/"
+int doltliteIsWorkspaceBranch(const char *zBranch);
+int doltliteWorkspaceBranchIsValid(const char *zBranch);
+char *doltliteWorkspaceBranchName(const char *zName);
+int doltliteWorkspaceRefIsValid(const char *zRef);
+char *doltliteWorkspaceBranchFromRef(const char *zRef);
+
 typedef struct DoltliteCommit DoltliteCommit;
 int doltliteLoadCommit(sqlite3 *db, const ProllyHash *pHash,
                        DoltliteCommit *pCommit);
