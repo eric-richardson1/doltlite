@@ -40,6 +40,9 @@ Only command functions are direct-only; `dolt_hashof` and `dolt_version` are not
 - **A Dolt commit is always durable when it returns.** Inside `BEGIN`,
   `dolt_commit` commits the SQL transaction and begins a new one, as Dolt
   does; `@@dolt_transaction_commit` has no counterpart.
+- **`dolt_push(remote, ':refs/tags/<tag>')` deletes a remote tag**, as in
+  git. Dolt refuses that refspec as an unsupported mapping, so a remote tag
+  can otherwise only be removed by editing the remote directly.
 - **Refs are not transactional.** `dolt_branch` and `dolt_tag` take effect
   immediately and survive `ROLLBACK`.
 - **`dolt_docs` rows are stored, including the default.** A fresh database
