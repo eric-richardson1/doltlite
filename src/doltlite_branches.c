@@ -365,7 +365,7 @@ sqlite3_module doltliteRemoteBranchesModule = {
   0,0,0,0,0,0,0,0,0,0,0,0
 };
 
-static int wsFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3_value **v){
+static int brWorkspacesFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3_value **v){
   BrVtab *pVtab = (BrVtab*)c->pVtab;
   BrCur *pCur = (BrCur*)c;
   ChunkStore *cs = doltliteGetChunkStore(pVtab->db);
@@ -392,7 +392,7 @@ static int wsFilter(sqlite3_vtab_cursor *c, int n, const char *s, int a, sqlite3
 
 sqlite3_module doltliteWorkspacesModule = {
   0,0,rbConnect,brBestIndex,doltliteVtabDisconnect,0,
-  brOpen,brClose,wsFilter,brNext,brEof,brColumn,brRowid,
+  brOpen,brClose,brWorkspacesFilter,brNext,brEof,brColumn,brRowid,
   0,0,0,0,0,0,0,0,0,0,0,0
 };
 
