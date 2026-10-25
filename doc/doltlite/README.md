@@ -44,6 +44,7 @@ the forms each surface accepts are in [refs.md](refs.md).
 - [dolt_gc.md](dolt_gc.md) — `dolt_gc`, `VACUUM`
 - [dolt_constraint_violations.md](dolt_constraint_violations.md) — `dolt_constraint_violations`, `dolt_constraint_violations_<table>`, `dolt_verify_constraints`
 - [dolt_workspace.md](dolt_workspace.md) — `dolt_workspace_<table>`
+- [workspace_refs.md](workspace_refs.md) — `dolt_workspace`, `dolt_workspaces`: workspace refs (`refs/workspaces/<name>`) for DoltHub-style edits
 - [dolt_ignore.md](dolt_ignore.md) — `dolt_ignore`
 - [dolt_docs.md](dolt_docs.md) — `dolt_docs`
 - [dolt_tests.md](dolt_tests.md) — `dolt_tests`, `dolt_test_run`
