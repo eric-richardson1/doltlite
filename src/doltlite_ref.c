@@ -58,7 +58,7 @@ static int doltliteOpenRevisionBase(
       }
       *pzBranch = zWorkspace;
       memset(&commit, 0, sizeof(commit));
-      rc = doltliteLoadCommitFromStore(cs, pCommit, &commit);
+      rc = doltliteLoadCommitFromStore(cs, pCommit, &commit, pMissing, eMissing);
       if( rc==SQLITE_OK ) doltliteCommitClear(&commit);
       return rc;
     }
