@@ -11276,9 +11276,10 @@ SQLITE_API int SQLITE_APICALL doltlite_set_chunk_source(
 ** immediately loads the new branch state through it; otherwise graph loading
 ** is deferred until a source is registered or the graph is first accessed.
 **
-** The refs blob may include the origin remote and tracking refs. DoltLite
-** copies the blob before this function returns. The database must be writable
-** and outside a transaction. The refs update is durable before any immediate
+** The refs blob may include the origin remote and tracking refs. Remotes
+** already configured on the database and not named by the blob are kept.
+** DoltLite copies the blob before this function returns. The database must
+** be writable and outside a transaction. The refs update is durable before any immediate
 ** source-backed hydration; if that hydration fails, the installed refs remain
 ** available for a later retry.
 */

@@ -66,7 +66,9 @@ URI's query parameters. Detached
 connections return `NULL` from `active_branch()`, fail writes with
 `attempt to write a readonly database`, and stay pinned even if a peer moves
 or deletes the ref. A missing revision fails the open:
-`branch or revision "x" not found`.
+`branch or revision "x" not found`. On a lazy clone, add `?lazy_origin=1` so
+the revision's commits can be fetched; without a chunk source the open fails
+naming the chunk it lacks.
 
 ## Names
 

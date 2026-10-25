@@ -54,6 +54,8 @@ fast-forward pull remain refs-only while the connection is origin-enabled. A
 divergent lazy pull is refused until the store is fully materialized.
 Opening without `lazy_origin=1` leaves cached chunks available, but an
 uncached miss fails with a hash-named error instead of contacting `origin`.
+A revision path such as `file:/path/to/lazy.db@main~1?lazy_origin=1`
+resolves its tag, hash, or ancestor through `origin` the same way.
 The optional `--revision` value resolves a branch, tag, commit hash, or
 ancestor expression once during the lazy clone. A branch selects its working
 set; every other revision opens a read-only detached snapshot at that commit.

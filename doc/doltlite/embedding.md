@@ -10,7 +10,10 @@ tables (`dolt_log`, `dolt_diff_<table>`, …).
 `doltlite_set_chunk_source()` registers synchronous `xGet` and `xGetMany`
 callbacks for one attached database. `doltlite_init_lazy()` installs a refs
 blob into a fresh or existing main database, allowing missing graph chunks to
-be fetched and cached on demand. Source objects remain owned by the host and
+be fetched and cached on demand. Remotes already configured on the database
+and not named by the blob are kept, so a connection opened with
+`?lazy_origin=1` can add `origin` and then install refs that it fetches
+through. Source objects remain owned by the host and
 must outlive their registrations.
 
 Loadable extensions use `doltliteext.h` (rebranded `sqlite3ext.h`, shipped in
