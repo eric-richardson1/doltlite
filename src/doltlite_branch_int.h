@@ -19,6 +19,7 @@ int mutateBranchRef(sqlite3 *db, ChunkStore *cs, void *pArg);
 
 extern sqlite3_module doltliteBranchesModule;
 extern sqlite3_module doltliteRemoteBranchesModule;
+extern sqlite3_module doltliteWorkspacesModule;
 
 void doltCheckoutFunc(sqlite3_context*, int, sqlite3_value**);
 void doltConnectBranchFunc(sqlite3_context*, int, sqlite3_value**);

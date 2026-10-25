@@ -631,6 +631,7 @@ struct PushTrackingMutation {
 static int mutatePushTracking(sqlite3 *db, ChunkStore *cs, void *pArg){
   PushTrackingMutation *p = (PushTrackingMutation*)pArg;
   (void)db;
+  if( doltliteIsWorkspaceBranch(p->zBranch) ) return SQLITE_OK;
   if( p->bDelete ) return chunkStoreDeleteTracking(cs, p->zRemote, p->zBranch);
   return chunkStoreUpdateTracking(cs, p->zRemote, p->zBranch, &p->commit);
 }
@@ -673,6 +674,7 @@ static int doltPushParsedFunc(
   const char *zColon = zRefSpec ? strchr(zRefSpec, ':') : 0;
   char *zSrc = 0;
   char *zDelete = 0;
+  char *zWorkspace = 0;
   ProllyHash srcCommit;
   PushTrackingMutation mutation;
   int bBranch = 0;
@@ -699,7 +701,8 @@ static int doltPushParsedFunc(
     if( !zSrc ){ sqlite3_result_error_nomem(ctx); return SQLITE_NOMEM; }
     zRef = remoteSqlStripPrefix(zDst, REMOTE_HEADS_PREFIX);
     /* Destination uses the same rules as dolt_branch. */
-    if( !doltliteUserRefNameIsValid(zRef) ){
+    if( !doltliteUserRefNameIsValid(zRef)
+     && !doltliteWorkspaceRefIsValid(zRef) ){
       sqlite3_free(zSrc);
       doltliteVcResultError(ctx, db, "invalid branch name");
       return SQLITE_ERROR;
@@ -734,8 +737,24 @@ static int doltPushParsedFunc(
         return SQLITE_NOTFOUND;
       }
     }
+    if( doltliteWorkspaceRefIsValid(zRef) ){
+      zWorkspace = doltliteWorkspaceBranchFromRef(zRef);
+      if( !zWorkspace ){
+        sqlite3_free(zSrc);
+        sqlite3_result_error_nomem(ctx);
+        return SQLITE_NOMEM;
+      }
+      zRef = zWorkspace;
+    }
   }else if( zRef ){
-    if( zRef[0]==':' ){
+    if( doltliteWorkspaceRefIsValid(zRef + (zRef[0]==':')) ){
+      char *zBranch = doltliteWorkspaceBranchFromRef(zRef + (zRef[0]==':'));
+      zDelete = zBranch ? sqlite3_mprintf("%s%s", zRef[0]==':' ? ":" : "",
+                                          zBranch) : 0;
+      sqlite3_free(zBranch);
+      if( !zDelete ){ sqlite3_result_error_nomem(ctx); return SQLITE_NOMEM; }
+      zRef = zDelete;
+    }else if( zRef[0]==':' ){
       const char *zBranch = remoteSqlStripPrefix(zRef+1, REMOTE_HEADS_PREFIX);
       if( zBranch!=zRef+1 ){
         zDelete = sqlite3_mprintf(":%s", zBranch);
@@ -754,6 +773,7 @@ static int doltPushParsedFunc(
   if( remoteSqlReportOpenError(ctx, db, rc, 0) ){
     sqlite3_free(zSrc);
     sqlite3_free(zDelete);
+    sqlite3_free(zWorkspace);
     return rc ? rc : SQLITE_ERROR;
   }
 
@@ -802,6 +822,7 @@ static int doltPushParsedFunc(
     pRemote->xClose(pRemote);
     sqlite3_free(zSrc);
     sqlite3_free(zDelete);
+    sqlite3_free(zWorkspace);
     (void)doltliteVcSealSavepointError(db);
     remoteSqlResultError(ctx, rc, 0);
     return rc;
@@ -815,7 +836,9 @@ static int doltPushParsedFunc(
     char *zOwned;
     int bRejected = pbRejected && bBranch && !mutation.bDelete
                   && rc==SQLITE_CONSTRAINT;
-    if( bBranch && mutation.bDelete && rc==SQLITE_CONSTRAINT ){
+    if( bBranch && rc==SQLITE_EMPTY ){
+      zMsg = "cannot push a workspace to a remote with no branches";
+    }else if( bBranch && mutation.bDelete && rc==SQLITE_CONSTRAINT ){
       zMsg = "cannot delete the remote default branch";
     }else if( bBranch && mutation.bDelete && rc==SQLITE_MISUSE ){
       zMsg = "push failed: branch name required after ':'";
@@ -825,7 +848,15 @@ static int doltPushParsedFunc(
     }else if( !zMsg && rc==SQLITE_NOTFOUND ){
       zMsg = "push failed: branch or tag not found";
     }
-    if( bBranch && mutation.bDelete && rc==SQLITE_NOTFOUND ){
+    if( bBranch && mutation.bDelete && rc==SQLITE_NOTFOUND
+     && doltliteIsWorkspaceBranch(mutation.zBranch) ){
+      zOwned = sqlite3_mprintf(
+          "failed to delete remote; 'refs/workspaces/%s' from remote '%s'; "
+          "workspace not found",
+          mutation.zBranch + strlen(DOLTLITE_WORKSPACE_BRANCH_PREFIX),
+          zRemoteName);
+      if( !zOwned ) rc = SQLITE_NOMEM;
+    }else if( bBranch && mutation.bDelete && rc==SQLITE_NOTFOUND ){
       zOwned = sqlite3_mprintf(
           "failed to delete remote; 'refs/heads/%s' from remote '%s'; "
           "branch not found", mutation.zBranch, zRemoteName);
@@ -837,6 +868,7 @@ static int doltPushParsedFunc(
     pRemote->xClose(pRemote);
     sqlite3_free(zSrc);
     sqlite3_free(zDelete);
+    sqlite3_free(zWorkspace);
     if( bRejected ){
       *pbRejected = 1;
       return rc;
@@ -858,6 +890,7 @@ static int doltPushParsedFunc(
   }
   sqlite3_free(zSrc);
   sqlite3_free(zDelete);
+  sqlite3_free(zWorkspace);
   if( bLocalLock ) chunkStoreUnlock(cs);
   if( rc!=SQLITE_OK ){
     remoteSqlResultError(ctx, rc, 0);
@@ -907,7 +940,9 @@ static int pushEveryLocalBranch(
   }
   for(i=0; i<nBr; i++){
     int bRejected = 0;
-    int pushRc = doltPushParsedFunc(
+    int pushRc;
+    if( doltliteIsWorkspaceBranch(azBranch[i]) ) continue;
+    pushRc = doltPushParsedFunc(
         ctx, zRemoteName, azBranch[i], bForce, 0,
         nBr>1 ? &bRejected : 0);
     if( pushRc==SQLITE_OK ) continue;
@@ -1037,10 +1072,12 @@ static void doltPushFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
   doltliteCmdArgsClear(&args);
 }
 
+/* Workspaces are listed only when bWorkspaces is set. */
 static int parseRemoteBranchNames(
   DoltliteRemote *pRemote,
   char ***pazNames,
-  int *pnNames
+  int *pnNames,
+  int bWorkspaces
 ){
   u8 *refsData = 0;
   int nRefsData = 0;
@@ -1083,6 +1120,7 @@ static int parseRemoteBranchNames(
       }
       memset(azNames, 0, nBr * sizeof(char*));
       for(i=0; i<nBr; i++){
+        if( !bWorkspaces && doltliteIsWorkspaceBranch(aBr[i].zName) ) continue;
         azNames[nNames] = sqlite3_mprintf("%s", aBr[i].zName);
         if( !azNames[nNames] ){
           doltliteFreeStringArray(azNames, nNames);
@@ -1154,6 +1192,11 @@ static int remoteSqlFetchBranch(
                          pbMissingBranch);
   if( rc!=SQLITE_OK && pzErr ){
     const char *zMsg = remoteSqlFetchMsg(pRemote, rc);
+    if( doltliteIsWorkspaceBranch(zTrack) && rc==SQLITE_CONSTRAINT ){
+      zMsg = "fetch failed: local workspace has commits the remote does not";
+    }else if( doltliteIsWorkspaceBranch(zTrack) && rc==SQLITE_LOCKED ){
+      zMsg = "fetch failed: local workspace has uncommitted changes";
+    }
     if( zMsg ){
       *pzErr = sqlite3_mprintf("%s", zMsg);
     }else if( rc==SQLITE_NOTFOUND ){
@@ -1387,7 +1430,7 @@ static void doltFetchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
     return;
   }
   /* Explicit refspecs are matched against this list before any fetch. */
-  rc = parseRemoteBranchNames(pRemote, &azNames, &nNames);
+  rc = parseRemoteBranchNames(pRemote, &azNames, &nNames, 1);
   if( rc!=SQLITE_OK ){
     const char *zMsg = remoteSqlRemoteMsg(pRemote, rc);
     char *zOwned = zMsg ? sqlite3_mprintf("%s", zMsg) : 0;
@@ -1423,10 +1466,14 @@ static void doltFetchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
       ** invalid spec cannot leave this one already installed. */
       if( !strchr(zSpec, ':') ){
         const char *zBranch = remoteSqlStripPrefix(zSpec, REMOTE_HEADS_PREFIX);
-        if( !fetchSpecNamePresent(azNames, nNames, zBranch) ){
+        char *zWorkspace = doltliteWorkspaceBranchFromRef(zSpec);
+        if( !fetchSpecNamePresent(azNames, nNames,
+                                  zWorkspace ? zWorkspace : zBranch)
+         || (!zWorkspace && doltliteIsWorkspaceBranch(zBranch)) ){
           rc = fetchSpecResultInvalid(ctx, db,
               "fetch failed: invalid ref spec: '%s'", zBranch);
         }
+        sqlite3_free(zWorkspace);
         continue;
       }
       prc = fetchSpecParseColon(zSpec, &bGlob, &zTrackRemote, &zSrcPat, &zDstPat);
@@ -1440,12 +1487,14 @@ static void doltFetchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
         for(k=0; k<nNames; k++){
           const char *zCap = 0;
           int nCap = 0;
+          if( doltliteIsWorkspaceBranch(azNames[k]) ) continue;
           if( fetchPatMatch(zSrcPat, azNames[k], &zCap, &nCap) ) bSeen = 1;
         }
         if( !bSeen ){
           rc = fetchSpecResultInvalid(ctx, db, "invalid fetch spec: '%s'", zSpec);
         }
-      }else if( !fetchSpecNamePresent(azNames, nNames, zSrcPat) ){
+      }else if( !fetchSpecNamePresent(azNames, nNames, zSrcPat)
+             || doltliteIsWorkspaceBranch(zSrcPat) ){
         rc = fetchSpecResultInvalid(ctx, db,
             "fetch failed: invalid ref spec: '%s'", zSrcPat);
       }
@@ -1464,7 +1513,9 @@ static void doltFetchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
       int prc;
       if( !zColon ){
         const char *zBranch;
-        zSrc = sqlite3_mprintf("%s", zSpec);
+        zSrc = doltliteWorkspaceRefIsValid(zSpec)
+             ? doltliteWorkspaceBranchFromRef(zSpec)
+             : sqlite3_mprintf("%s", zSpec);
         if( !zSrc ){
           rc = SQLITE_NOMEM;
           sqlite3_result_error_nomem(ctx);
@@ -1489,6 +1540,7 @@ static void doltFetchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
           int nCap = 0;
           int missing = 0;
           char *zTrack;
+          if( doltliteIsWorkspaceBranch(azNames[k]) ) continue;
           if( !fetchPatMatch(zSrcPat, azNames[k], &zCap, &nCap) ) continue;
           zTrack = fetchPatApply(zDstPat, zCap, nCap);
           if( !zTrack ){
@@ -1512,6 +1564,7 @@ static void doltFetchFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
   }else{
     for(i=0; i<nNames && rc==SQLITE_OK; i++){
       int missing = 0;
+      if( doltliteIsWorkspaceBranch(azNames[i]) ) continue;
       rc = remoteSqlFetchOne(ctx, db, cs, zUrlOwned, zRemoteName,
                              azNames[i], azNames[i], &missing);
       if( missing ){
@@ -1796,7 +1849,7 @@ static void doltPullParsed(
   ** --prune needs the remote's branch list either way, and unlike fetch
   ** it is allowed together with a branch. */
   if( bFetchAll || bPrune ){
-    rc = parseRemoteBranchNames(pRemote, &azKeep, &nKeep);
+    rc = parseRemoteBranchNames(pRemote, &azKeep, &nKeep, 0);
     if( rc!=SQLITE_OK ){
       const char *zMsg = remoteSqlRemoteMsg(pRemote, rc);
       char *zOwned = zMsg ? sqlite3_mprintf("%s", zMsg) : 0;
@@ -2121,7 +2174,7 @@ static void doltCloneFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){
   if( zBranchOpt ){
     char **azNames = 0;
     int nNames = 0, found = 0, k;
-    rc = parseRemoteBranchNames(pRemote, &azNames, &nNames);
+    rc = parseRemoteBranchNames(pRemote, &azNames, &nNames, 0);
     for(k=0; rc==SQLITE_OK && k<nNames; k++){
       if( strcmp(azNames[k], zBranchOpt)==0 ) found = 1;
     }

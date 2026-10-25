@@ -116,7 +116,8 @@ static void doltliteDefaultBranchFunc(
       sqlite3_result_error(ctx, "branch name required", -1);
       return;
     }
-    rc = doltliteMutateRefs(db, mutateDefaultBranch, (void*)zNew);
+    rc = doltliteIsWorkspaceBranch(zNew) ? SQLITE_NOTFOUND
+       : doltliteMutateRefs(db, mutateDefaultBranch, (void*)zNew);
     if( rc==SQLITE_NOTFOUND ){
       char *zErr = sqlite3_mprintf("branch '%s' not found", zNew);
       sqlite3_result_error(ctx, zErr ? zErr : "branch not found", -1);

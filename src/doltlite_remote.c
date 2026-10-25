@@ -113,6 +113,7 @@ static int remoteCollectRootsFromRefsBlob(
       }
     }
     for(i=0; i<nBr; i++){
+      if( doltliteIsWorkspaceBranch(aBr[i].zName) ) continue;
       if( !prollyHashIsEmpty(&aBr[i].commitHash) ){
         aRoots[nRoots++] = aBr[i].commitHash;
       }
@@ -1234,9 +1235,20 @@ static int remoteDefaultIsFirstName(const RefsTable *rt, const char *zDefault){
   const BranchRef *a = 0;
   refsTableGetBranches(rt, &n, &a);
   for(i=0; i<n; i++){
+    if( doltliteIsWorkspaceBranch(a[i].zName) ) continue;
     if( strcmp(a[i].zName, zDefault)<0 ) return 0;
   }
   return 1;
+}
+
+static int remoteRefsHaveUserBranch(const RefsTable *rt){
+  int n = 0, i;
+  const BranchRef *a = 0;
+  refsTableGetBranches(rt, &n, &a);
+  for(i=0; i<n; i++){
+    if( !doltliteIsWorkspaceBranch(a[i].zName) ) return 1;
+  }
+  return 0;
 }
 
 /* The default a push leaves on the remote. An empty remote adopts the pushed
@@ -1249,7 +1261,7 @@ static const char *remotePushedDefault(
   int bCreate
 ){
   const char *zDefault = scopedDefaultBranch(pCur);
-  if( !bCreate ) return zDefault;
+  if( !bCreate || doltliteIsWorkspaceBranch(zBranch) ) return zDefault;
   if( refsTableBranchCount(pCur)==0 ) return zBranch;
   if( strcmp(zBranch, "main")==0 ) return zBranch;
   if( strcmp(zBranch, "master")==0 && strcmp(zDefault, "main")!=0
@@ -1586,7 +1598,10 @@ static int remoteValidateScopedRefsUpdate(
     return SQLITE_CONSTRAINT;
   }
   if( !zRef || !zRef[0] ) return SQLITE_MISUSE;
-  if( !doltliteUserRefNameIsValid(zTag ? zTag : zRef) ) return SQLITE_CONSTRAINT;
+  if( !doltliteUserRefNameIsValid(zTag ? zTag : zRef)
+   && (zTag || !doltliteWorkspaceBranchIsValid(zRef)) ){
+    return SQLITE_CONSTRAINT;
+  }
   memset(&inc, 0, sizeof(inc));
   rc = csDeserializeRefsIntoTemp(&inc, pBlob, nBlob);
   if( rc!=SQLITE_OK ){
@@ -2149,6 +2164,13 @@ int doltlitePushAs(
         rc = SQLITE_NOTFOUND;
         goto push_done;
       }
+      /* A refs blob with branches must hold its default branch, and a
+      ** workspace never becomes the default. */
+      if( !bDelete && doltliteIsWorkspaceBranch(zBranch)
+       && !remoteRefsHaveUserBranch(&refs.refs) ){
+        rc = SQLITE_EMPTY;
+        goto push_done;
+      }
       if( !bDelete && exists && !bForce
        && !prollyHashIsEmpty(&remoteCommit)
        && prollyHashCompare(&remoteCommit, &localCommit)!=0 ){
@@ -2382,7 +2404,8 @@ static int installFetchedRefs(
   int commitRefs;
   int descends;
   int ahead;
-  int findRc;
+  int findRc = SQLITE_NOTFOUND;
+  int bWorkspace = doltliteIsWorkspaceBranch(zBranch);
   int i;
   int rc;
 
@@ -2460,9 +2483,15 @@ static int installFetchedRefs(
     }
   }
   if( rc==SQLITE_OK ){
-    findRc = chunkStoreFindTracking(
-        &nextRefs, zRemoteName, zBranch, &currentTracking);
-    if( findRc==SQLITE_NOTFOUND ){
+    findRc = bWorkspace
+        ? chunkStoreFindBranch(&nextRefs, zBranch, &currentTracking)
+        : chunkStoreFindTracking(
+              &nextRefs, zRemoteName, zBranch, &currentTracking);
+    if( findRc==SQLITE_OK && bWorkspace
+     && prollyHashCompare(&currentTracking, pRemoteCommit)==0 ){
+      commitRefs = 1;
+      if( pSettled ) *pSettled = 1;
+    }else if( findRc==SQLITE_NOTFOUND ){
       updateTracking = 1;
       commitRefs = 1;
       if( pSettled ) *pSettled = 1;
@@ -2494,6 +2523,9 @@ static int installFetchedRefs(
           /* The tracking ref moved past this fetch. Do not commit the
           ** older refs snapshot, or its tags and sequences would follow. */
           if( pSettled ) *pSettled = 1;
+        }else if( rc==SQLITE_OK && bWorkspace ){
+          /* A local workspace commit the remote lacks is not overwritten. */
+          rc = SQLITE_CONSTRAINT;
         }else if( rc==SQLITE_OK ){
           /* Diverged. The caller re-reads the remote and tries again. */
           if( pSettled ) *pSettled = 0;
@@ -2501,7 +2533,29 @@ static int installFetchedRefs(
       }
     }
   }
-  if( rc==SQLITE_OK && updateTracking ){
+  if( rc==SQLITE_OK && updateTracking && bWorkspace ){
+    if( findRc==SQLITE_OK ){
+      int iRef = csFindNamedRef(nextRefs.refs.aBranches,
+                                nextRefs.refs.nBranches,
+                                (int)sizeof(BranchRef), zBranch);
+      int dirty = 0;
+      ProllyHash emptyWs;
+      memset(&emptyWs, 0, sizeof(emptyWs));
+      if( iRef>=0 ){
+        rc = scopedWorkingSetIsDirty(
+            pLocal, &nextRefs.refs.aBranches[iRef], &dirty);
+      }
+      if( rc==SQLITE_OK && dirty ) rc = SQLITE_LOCKED;
+      if( rc==SQLITE_OK ){
+        rc = chunkStoreUpdateBranch(&nextRefs, zBranch, pRemoteCommit);
+      }
+      if( rc==SQLITE_OK ){
+        rc = chunkStoreSetBranchWorkingSet(&nextRefs, zBranch, &emptyWs);
+      }
+    }else{
+      rc = chunkStoreAddBranch(&nextRefs, zBranch, pRemoteCommit);
+    }
+  }else if( rc==SQLITE_OK && updateTracking ){
     rc = chunkStoreUpdateTracking(
         &nextRefs, zRemoteName, zBranch, pRemoteCommit);
   }
@@ -2665,6 +2719,7 @@ static int cloneBranchKept(
   int bKeepIsBranch,
   int bSingle
 ){
+  if( doltliteIsWorkspaceBranch(zName) ) return 0;
   if( bSingle ){
     if( bKeepIsBranch ) return strcmp(zName, zKeep)==0;
     return zDefault && strcmp(zName, zDefault)==0;
@@ -2691,11 +2746,12 @@ static int remotePrepareCloneRefs(
   csFreeRemotes(pStore);
   csFreeTracking(pStore);
   rc = chunkStoreAddRemote(pStore, zRemoteName, zUrl);
-  bKeepIsBranch = zKeep && zKeep[0]
+  bKeepIsBranch = zKeep && zKeep[0] && !doltliteIsWorkspaceBranch(zKeep)
                && chunkStoreFindBranch(pStore, zKeep, 0)==SQLITE_OK;
   refsTableGetBranches(&pStore->refs, &nBranch, &aBranch);
   for(i=0; i<nBranch && rc==SQLITE_OK; i++){
     const char *zDefault = chunkStoreGetDefaultBranch(pStore);
+    if( doltliteIsWorkspaceBranch(aBranch[i].zName) ) continue;
     if( !cloneBranchKept(aBranch[i].zName, zDefault, zKeep,
                          bKeepIsBranch, bSingle) && bSingle ){
       continue;

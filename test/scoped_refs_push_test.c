@@ -189,6 +189,85 @@ int main(void){
     }
   }
 
+  /* Workspaces are ordinary entries in the v7 branch section, so the
+  ** unchanged decoder reads them and a scoped push may carry one. */
+  {
+    const char *azBad[] = {"workspaces:", "workspaces:a:b", "workspaces:a..b",
+      "workspaces:x y"};
+    ChunkStore tmp, dec;
+    u8 *blob = 0;
+    int n = 0, i, seen = 0, k;
+    memset(&tmp, 0, sizeof(tmp));
+    memset(&dec, 0, sizeof(dec));
+    chunkStoreLoadRefsFromBlob(&tmp, curBlob, nCur);
+    check("workspace: add ref",
+      chunkStoreAddBranch(&tmp, "workspaces:w1", &Hc)==SQLITE_OK);
+    chunkStoreSerializeRefsToBlob(&tmp, &blob, &n);
+    check("workspace: blob stays version 7", n>0 && blob && blob[0]==7);
+    check("workspace: v7 decoder accepts blob",
+      blob && csDecodeRefsV7(blob, n, &dec.refs, 0, 0)==SQLITE_OK);
+    for(i=0; i<dec.refs.nBranches; i++){
+      if( strcmp(dec.refs.aBranches[i].zName, "workspaces:w1")==0
+       && prollyHashCompare(&dec.refs.aBranches[i].commitHash, &Hc)==0 ){
+        seen = 1;
+      }
+    }
+    check("workspace: decoded as branch entry", seen);
+    check("workspace: default untouched",
+      dec.refs.zDefaultBranch && strcmp(dec.refs.zDefaultBranch, "main")==0);
+    csFreeRefsState(&dec);
+    check("workspace: scoped push creates workspace",
+      doltliteValidateScopedRefsUpdate(&cs, blob, n, "workspaces:w1", 0, 0)
+        ==SQLITE_OK);
+    sqlite3_free(blob);
+    blob = 0;
+    chunkStoreClose(&tmp);
+    for(k=0; k<(int)(sizeof(azBad)/sizeof(azBad[0])); k++){
+      memset(&tmp, 0, sizeof(tmp));
+      chunkStoreLoadRefsFromBlob(&tmp, curBlob, nCur);
+      chunkStoreAddBranch(&tmp, azBad[k], &Hc);
+      chunkStoreSerializeRefsToBlob(&tmp, &blob, &n);
+      check("workspace: reject invalid workspace name",
+        doltliteValidateScopedRefsUpdate(&cs, blob, n, azBad[k], 1, 0)
+          ==SQLITE_CONSTRAINT);
+      sqlite3_free(blob);
+      blob = 0;
+      chunkStoreClose(&tmp);
+    }
+  }
+
+  /* A workspace that sorts before the default never takes it over. */
+  {
+    const char *path2 = DOLTLITE_TEST_TMPDIR "/scoped_refs_push_ws_default.db";
+    ChunkStore cs2, tmp;
+    u8 *base = 0, *blob = 0;
+    int nBase = 0, n = 0;
+    check("workspace default: open", openStore(&cs2, path2)==SQLITE_OK);
+    chunkStoreSetDefaultBranch(&cs2, "zeta");
+    chunkStoreAddBranch(&cs2, "zeta", &Ha);
+    chunkStoreSerializeRefs(&cs2);
+    chunkStoreCommit(&cs2);
+    chunkStoreSerializeRefsToBlob(&cs2, &base, &nBase);
+    memset(&tmp, 0, sizeof(tmp));
+    chunkStoreLoadRefsFromBlob(&tmp, base, nBase);
+    chunkStoreAddBranch(&tmp, "workspaces:a", &Hb);
+    chunkStoreSerializeRefsToBlob(&tmp, &blob, &n);
+    check("workspace default: keeps default",
+      doltliteValidateScopedRefsUpdate(&cs2, blob, n, "workspaces:a", 0, 0)
+        ==SQLITE_OK);
+    sqlite3_free(blob);
+    blob = 0;
+    chunkStoreSetDefaultBranch(&tmp, "workspaces:a");
+    chunkStoreSerializeRefsToBlob(&tmp, &blob, &n);
+    check("workspace default: refuses workspace default",
+      doltliteValidateScopedRefsUpdate(&cs2, blob, n, "workspaces:a", 1, 0)
+        ==SQLITE_CONSTRAINT);
+    sqlite3_free(blob);
+    sqlite3_free(base);
+    chunkStoreClose(&tmp);
+    chunkStoreClose(&cs2);
+  }
+
   /* Attack: a push declaring branch foo carries a blob that also rewrites
   ** main. The scoped validator must reject it, with or without force. */
   {
