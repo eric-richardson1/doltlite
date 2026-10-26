@@ -170,12 +170,22 @@ jobs:
       if: runner.os == 'macOS'
       run: brew install zlib || true
 
-    - name: Configure and build (Unix)
-      if: runner.os != 'Windows'
+    # Linux builds run in an Ubuntu 20.04 container so the binaries need at
+    # most glibc 2.31; built on the runner they would need its newer glibc.
+    - name: Configure and build (Linux)
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/build-linux-portable.sh
+
+    - name: Verify Linux glibc floor
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/check-glibc-floor.sh build/doltlite build/doltlite-remotesrv build/libdoltlite.so
+
+    - name: Configure and build (macOS)
+      if: runner.os == 'macOS'
       run: |
         mkdir -p build && cd build
         ../configure
-        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) doltlite doltlite-remotesrv doltlite-lib
+        make -j$(sysctl -n hw.ncpu) doltlite doltlite-remotesrv doltlite-lib
 
     - name: Build (Windows / MSYS2)
       if: runner.os == 'Windows'
