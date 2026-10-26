@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Fails if any listed ELF file requires a glibc symbol version newer than
-# MAX (default 2.31, Ubuntu 20.04's glibc).
+# MAX (default 2.28, the glibc of the manylinux_2_28 build image).
 set -euo pipefail
 
-max="${DOLTLITE_MAX_GLIBC:-2.31}"
+max="${DOLTLITE_MAX_GLIBC:-2.28}"
 status=0
 for f in "$@"; do
   needed=$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V -u | tail -1)

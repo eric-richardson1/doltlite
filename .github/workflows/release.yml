@@ -170,11 +170,17 @@ jobs:
       if: runner.os == 'macOS'
       run: brew install zlib || true
 
-    # Linux builds run in an Ubuntu 20.04 container so the binaries need at
-    # most glibc 2.31; built on the runner they would need its newer glibc.
+    # Linux builds run in a manylinux_2_28 container (current gcc, glibc
+    # 2.28) so the binaries run on older distributions; built on the runner
+    # they would need its newer glibc. The released binaries are the ones
+    # tested, since they are built differently from CI's.
     - name: Configure and build (Linux)
       if: runner.os == 'Linux'
-      run: bash .github/scripts/build-linux-portable.sh
+      run: bash .github/scripts/build-linux-portable.sh build
+
+    - name: Test Linux build
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/build-linux-portable.sh test
 
     - name: Verify Linux glibc floor
       if: runner.os == 'Linux'
